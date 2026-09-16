@@ -1,11 +1,23 @@
 FROM aiogram/telegram-bot-api:latest
 
-# Cổng kết nối
+# Cài đặt Node.js và npm vào container Telegram Bot API (Alpine)
+USER root
+RUN apk add --no-cache nodejs npm
+
+WORKDIR /app
+
+# Cài đặt thư viện Node.js
+COPY package*.json ./
+RUN npm install --production
+
+# Copy toàn bộ mã nguồn
+COPY . .
+
+# Phân quyền thực thi cho file start.sh
+RUN chmod +x /app/start.sh
+
+# Mở cổng 10000 cho Render
 EXPOSE 10000
 
-# Khai báo các biến môi trường bắt buộc
-ENV TELEGRAM_API_ID="30923182"
-ENV TELEGRAM_API_HASH="5dd845dd41553449d0ddaa214759d8b7"
-
-# Lệnh khởi chạy với chế độ local server
-CMD ["--local", "--http-port=10000", "--dir=/tmp"]
+# Chạy kịch bản khởi động kép
+CMD ["/app/start.sh"]
