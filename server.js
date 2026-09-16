@@ -4,6 +4,17 @@ const axios = require('axios');
 const FormData = require('form-data');
 
 const app = express();
+app.use((req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization, X-Drive-Token');
+  
+  // Trả về 204 ngay lập tức để phản hồi Preflight OPTIONS Request
+  if (req.method === 'OPTIONS') {
+    return res.sendStatus(204);
+  }
+  next();
+});
 const PORT = process.env.PORT || 10000;
 
 // Các biến môi trường bắt buộc trên Render
