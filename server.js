@@ -8,9 +8,13 @@ const app = express();
 const PORT = process.env.PORT || 10000;
 const BOT_TOKEN = process.env.BOT_TOKEN;
 
-// 1. Cấu hình CORS xử lý dứt điểm lỗi Preflight (OPTIONS) và Custom Header
+// 1. ĐỊA CHỈ LOCAL TELEGRAM BOT API SERVER (Dùng biến môi trường hoặc mặc định localhost:10000)
+const TELEGRAM_SERVER_URL = process.env.TELEGRAM_SERVER_URL || 'http://localhost:10000';
+const TELEGRAM_BASE_URL = `${TELEGRAM_SERVER_URL}/bot${BOT_TOKEN}`;
+
+// 2. Cấu hình CORS xử lý dứt điểm lỗi Preflight (OPTIONS) và Custom Header
 const corsOptions = {
-  origin: '*',
+  origin: '*', 
   methods: ['GET', 'POST', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'X-Drive-Token', 'Authorization', 'Range'],
   exposedHeaders: ['Content-Range', 'X-Content-Range', 'Content-Length', 'Content-Type'],
@@ -18,22 +22,18 @@ const corsOptions = {
 };
 
 app.use(cors(corsOptions));
-app.options('*', cors(corsOptions)); // Bắt buộc để nhận diện request preflight từ trình duyệt
+app.options('*', cors(corsOptions));
 
 app.use(express.json());
 
-// Cấu hình Multer lưu chunk tạm thời trong bộ nhớ RAM (Tối đa 55MB)
-const upload = multer({ 
-  storage: multer.memoryStorage(), 
-  limits: { fileSize: 55 * 1024 * 1024 } 
-});
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 2000 * 1024 * 1024 } }); // Hỗ trợ chunk lớn khi dùng Local Bot API
 
-// 2. Health Check Endpoint (Dùng cho Cron-job giữ server không ngủ)
+// Endpoint Health Check
 app.get('/', (req, res) => {
-  res.status(200).send('Teledrive Backend Data Plane is Running 24/7!');
+  res.status(200).send('Teledrive Backend Data Plane (Local Bot API) is Running!');
 });
 
-// 3. Endpoint UPLOAD (Đẩy chunk trực tiếp sang Telegram Bot API)
+// 3. Endpoint UPLOAD 
 app.post('/upload', upload.single('file'), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ ok: false, error: 'No file uploaded' });
@@ -45,14 +45,11 @@ app.post('/upload', upload.single('file'), async (req, res) => {
       contentType: req.file.mimetype || 'application/octet-stream',
     });
 
+    // Đã thay thế api.telegram.org bằng TELEGRAM_BASE_URL (Local Server)
     const tgRes = await axios.post(
-      `https://api.telegram.org/bot${BOT_TOKEN}/sendDocument`,
+      `${TELEGRAM_BASE_URL}/sendDocument`,
       formData,
-      { 
-        headers: formData.getHeaders(), 
-        maxBodyLength: Infinity, 
-        maxContentLength: Infinity 
-      }
+      { headers: formData.getHeaders(), maxBodyLength: Infinity, maxContentLength: Infinity }
     );
 
     if (!tgRes.data.ok) throw new Error(tgRes.data.description || 'Telegram API Error');
@@ -70,19 +67,19 @@ app.post('/upload', upload.single('file'), async (req, res) => {
   }
 });
 
-// 4. Endpoint STREAM / PREVIEW / DOWNLOAD (Bypass Worker)
+// 4. Endpoint STREAM / PREVIEW / DOWNLOAD
 app.get('/file/:file_id', async (req, res) => {
   try {
     const { file_id } = req.params;
 
-    // Lấy đường dẫn file từ Telegram API
-    const pathRes = await axios.get(`https://api.telegram.org/bot${BOT_TOKEN}/getFile?file_id=${file_id}`);
+    // Đã thay thế api.telegram.org bằng TELEGRAM_BASE_URL (Local Server)
+    const pathRes = await axios.get(`${TELEGRAM_BASE_URL}/getFile?file_id=${file_id}`);
     if (!pathRes.data.ok) return res.status(404).json({ error: 'File not found on Telegram' });
 
     const filePath = pathRes.data.result.file_path;
-    const fileUrl = `https://api.telegram.org/file/bot${BOT_TOKEN}/${filePath}`;
+    // URL tải file qua Local Bot API Server
+    const fileUrl = `${TELEGRAM_SERVER_URL}/file/bot${BOT_TOKEN}/${filePath}`;
 
-    // Stream byte trực tiếp từ Telegram về Client
     const streamRes = await axios({
       method: 'get',
       url: fileUrl,
@@ -90,7 +87,6 @@ app.get('/file/:file_id', async (req, res) => {
       headers: req.headers.range ? { range: req.headers.range } : {}
     });
 
-    // Chuyển tiếp các Header quan trọng cho phát Video/Audio
     if (streamRes.headers['content-type']) res.setHeader('Content-Type', streamRes.headers['content-type']);
     if (streamRes.headers['content-length']) res.setHeader('Content-Length', streamRes.headers['content-length']);
     if (streamRes.headers['content-range']) {
@@ -105,4 +101,4 @@ app.get('/file/:file_id', async (req, res) => {
   }
 });
 
-app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+app.listen(PORT, () => console.log(`Server listening on port ${PORT}`));
