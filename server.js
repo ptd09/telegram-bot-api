@@ -8,9 +8,9 @@ const app = express();
 const PORT = process.env.PORT || 10000;
 const BOT_TOKEN = process.env.BOT_TOKEN;
 
-// ==================== XỬ LÝ DỨT ĐIỂM LỖI CORS & 501 ====================
+// 1. Cấu hình CORS xử lý dứt điểm lỗi Preflight (OPTIONS) và Custom Header
 const corsOptions = {
-  origin: '*', 
+  origin: '*',
   methods: ['GET', 'POST', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'X-Drive-Token', 'Authorization', 'Range'],
   exposedHeaders: ['Content-Range', 'X-Content-Range', 'Content-Length', 'Content-Type'],
@@ -18,19 +18,22 @@ const corsOptions = {
 };
 
 app.use(cors(corsOptions));
-app.options('*', cors(corsOptions)); // Bắt toàn bộ request tiền trạm OPTIONS
-// =======================================================================
+app.options('*', cors(corsOptions)); // Bắt buộc để nhận diện request preflight từ trình duyệt
 
 app.use(express.json());
 
-const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 55 * 1024 * 1024 } });
+// Cấu hình Multer lưu chunk tạm thời trong bộ nhớ RAM (Tối đa 55MB)
+const upload = multer({ 
+  storage: multer.memoryStorage(), 
+  limits: { fileSize: 55 * 1024 * 1024 } 
+});
 
-// Endpoint Health Check
+// 2. Health Check Endpoint (Dùng cho Cron-job giữ server không ngủ)
 app.get('/', (req, res) => {
   res.status(200).send('Teledrive Backend Data Plane is Running 24/7!');
 });
 
-// Endpoint UPLOAD 50MB Chunk
+// 3. Endpoint UPLOAD (Đẩy chunk trực tiếp sang Telegram Bot API)
 app.post('/upload', upload.single('file'), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ ok: false, error: 'No file uploaded' });
@@ -45,7 +48,11 @@ app.post('/upload', upload.single('file'), async (req, res) => {
     const tgRes = await axios.post(
       `https://api.telegram.org/bot${BOT_TOKEN}/sendDocument`,
       formData,
-      { headers: formData.getHeaders(), maxBodyLength: Infinity, maxContentLength: Infinity }
+      { 
+        headers: formData.getHeaders(), 
+        maxBodyLength: Infinity, 
+        maxContentLength: Infinity 
+      }
     );
 
     if (!tgRes.data.ok) throw new Error(tgRes.data.description || 'Telegram API Error');
@@ -63,17 +70,19 @@ app.post('/upload', upload.single('file'), async (req, res) => {
   }
 });
 
-// Endpoint STREAM / PREVIEW / DOWNLOAD
+// 4. Endpoint STREAM / PREVIEW / DOWNLOAD (Bypass Worker)
 app.get('/file/:file_id', async (req, res) => {
   try {
     const { file_id } = req.params;
 
+    // Lấy đường dẫn file từ Telegram API
     const pathRes = await axios.get(`https://api.telegram.org/bot${BOT_TOKEN}/getFile?file_id=${file_id}`);
     if (!pathRes.data.ok) return res.status(404).json({ error: 'File not found on Telegram' });
 
     const filePath = pathRes.data.result.file_path;
     const fileUrl = `https://api.telegram.org/file/bot${BOT_TOKEN}/${filePath}`;
 
+    // Stream byte trực tiếp từ Telegram về Client
     const streamRes = await axios({
       method: 'get',
       url: fileUrl,
@@ -81,6 +90,7 @@ app.get('/file/:file_id', async (req, res) => {
       headers: req.headers.range ? { range: req.headers.range } : {}
     });
 
+    // Chuyển tiếp các Header quan trọng cho phát Video/Audio
     if (streamRes.headers['content-type']) res.setHeader('Content-Type', streamRes.headers['content-type']);
     if (streamRes.headers['content-length']) res.setHeader('Content-Length', streamRes.headers['content-length']);
     if (streamRes.headers['content-range']) {
@@ -95,4 +105,4 @@ app.get('/file/:file_id', async (req, res) => {
   }
 });
 
-app.listen(PORT, () => console.log(`Server listening on port ${PORT}`));
+app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
