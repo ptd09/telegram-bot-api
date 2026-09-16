@@ -1,3 +1,11 @@
+// Tự động dọn dẹp biến môi trường (xóa khoảng trắng, dấu ngoặc, hoặc chữ "bot" dán thừa)
+const rawToken = (process.env.BOT_TOKEN || '').trim().replace(/^["']|["']$/g, '');
+const BOT_TOKEN = rawToken.replace(/^bot/i, ''); // Xóa chữ 'bot' nếu lỡ dán ở đầu token
+
+const TELEGRAM_CHAT_ID = (process.env.TELEGRAM_CHAT_ID || '').trim().replace(/^["']|["']$/g, '');
+
+const rawServerUrl = (process.env.TELEGRAM_SERVER_URL || 'https://api.telegram.org').trim().replace(/\/+$/, '');
+const TELEGRAM_BASE_URL = `${rawServerUrl}/bot${BOT_TOKEN}`;
 const express = require('express');
 const multer = require('multer');
 const axios = require('axios');
