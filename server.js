@@ -17,20 +17,36 @@ const TELEGRAM_BASE_URL = `${TELEGRAM_SERVER_URL}/bot${BOT_TOKEN}`;
 
 // =========================================================================
 // 1. MIDDLEWARE XỬ LÝ DỨT ĐIỂM LỖI CORS VÀ PREFLIGHT (OPTIONS)
-// Bắt buộc đặt TRƯỚC TẤT CẢ các đường dẫn khác
+// Bắt buộc đặt TRƯỚC TẤT CẢ các đường dẫn khác.
+//
+// LƯU Ý: mọi phản hồi (kể cả 4xx/5xx và 404) đều phải đi qua lớp này,
+// nếu không trình duyệt sẽ báo "blocked by CORS policy" thay vì đọc được
+// nội dung lỗi JSON thật.
 // =========================================================================
-app.use((req, res, next) => {
+function applyCors(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Drive-Token, Authorization, Range');
-  res.setHeader('Access-Control-Expose-Headers', 'Content-Range, X-Content-Range, Content-Length, Content-Type');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Drive-Token, Authorization, Range, If-Range');
+  res.setHeader('Access-Control-Expose-Headers', 'Content-Range, X-Content-Range, Content-Length, Content-Type, Accept-Ranges');
+  res.setHeader('Access-Control-Max-Age', '86400');
+}
 
-  // Trả về HTTP 200 OK ngay lập tức khi trình duyệt hỏi tiền trạm (OPTIONS)
+app.use((req, res, next) => {
+  applyCors(req, res);
+
+  // Trả về HTTP 204 ngay lập tức khi trình duyệt hỏi tiền trạm (OPTIONS)
   if (req.method === 'OPTIONS') {
-    return res.sendStatus(200);
+    return res.sendStatus(204);
   }
 
   next();
+});
+
+// Bắt buộc: Express 4 cần khai báo tường minh route OPTIONS cho mọi path.
+// Nếu thiếu, preflight tới path không tồn tại sẽ rơi vào default 404 handler.
+app.options('*', (req, res) => {
+  applyCors(req, res);
+  res.sendStatus(204);
 });
 
 app.use(express.json());
@@ -50,6 +66,16 @@ app.get('/', (req, res) => {
   res.status(200).send('Teledrive Backend Data Plane is Running 24/7!');
 });
 
+app.get('/health', (req, res) => {
+  res.status(200).json({
+    ok: true,
+    service: 'teledrive-backend',
+    telegramServer: TELEGRAM_SERVER_URL,
+    configured: Boolean(BOT_TOKEN && TELEGRAM_CHAT_ID),
+    uptime: process.uptime()
+  });
+});
+
 // =========================================================================
 // 4. ENDPOINT UPLOAD CHUNK FILE (`POST /upload`)
 // =========================================================================
@@ -60,9 +86,9 @@ app.post('/upload', upload.single('file'), async (req, res) => {
     }
 
     if (!BOT_TOKEN || !TELEGRAM_CHAT_ID) {
-      return res.status(500).json({ 
-        ok: false, 
-        error: 'Chưa cấu hình BOT_TOKEN hoặc TELEGRAM_CHAT_ID trong Environment Variables' 
+      return res.status(500).json({
+        ok: false,
+        error: 'Chưa cấu hình BOT_TOKEN hoặc TELEGRAM_CHAT_ID trong Environment Variables'
       });
     }
 
@@ -124,7 +150,7 @@ app.get('/file/:file_id', async (req, res) => {
     }
 
     const filePath = pathRes.data.result.file_path;
-    
+
     // Tạo URL tải file thô
     const fileUrl = `${TELEGRAM_SERVER_URL}/file/bot${BOT_TOKEN}/${filePath}`;
 
@@ -133,15 +159,20 @@ app.get('/file/:file_id', async (req, res) => {
       method: 'get',
       url: fileUrl,
       responseType: 'stream',
-      headers: req.headers.range ? { range: req.headers.range } : {}
+      headers: req.headers.range ? { range: req.headers.range } : {},
+      validateStatus: status => status >= 200 && status < 400
     });
 
     // B3: Chuyển tiếp các Header quan trọng để trình duyệt phát Video/Audio hoặc tải về
     if (streamRes.headers['content-type']) res.setHeader('Content-Type', streamRes.headers['content-type']);
     if (streamRes.headers['content-length']) res.setHeader('Content-Length', streamRes.headers['content-length']);
+    if (streamRes.headers['accept-ranges']) res.setHeader('Accept-Ranges', streamRes.headers['accept-ranges']);
+
     if (streamRes.headers['content-range']) {
       res.setHeader('Content-Range', streamRes.headers['content-range']);
       res.status(206); // Partial Content
+    } else {
+      res.status(200);
     }
 
     streamRes.data.pipe(res);
@@ -153,13 +184,72 @@ app.get('/file/:file_id', async (req, res) => {
 });
 
 // =========================================================================
-// 6. XỬ LÝ LỖI NGUYÊN NÂN TỪ MULTER & CÁC LỖI TỔNG THỂ
+// 6. ENDPOINT XOÁ CHUNK TRÊN TELEGRAM (`POST /delete`)
+//    app.js gọi endpoint này trong cleanupUploadedParts() để dọn các chunk
+//    đã upload thất bại. Body: { message_id: number }
+// =========================================================================
+app.post('/delete', async (req, res) => {
+  try {
+    if (!BOT_TOKEN || !TELEGRAM_CHAT_ID) {
+      return res.status(500).json({
+        ok: false,
+        error: 'Chưa cấu hình BOT_TOKEN hoặc TELEGRAM_CHAT_ID trong Environment Variables'
+      });
+    }
+
+    const messageId = Number(req.body?.message_id);
+    if (!Number.isFinite(messageId) || messageId <= 0) {
+      return res.status(400).json({ ok: false, error: 'message_id không hợp lệ' });
+    }
+
+    const tgRes = await axios.post(`${TELEGRAM_BASE_URL}/deleteMessage`, {
+      chat_id: TELEGRAM_CHAT_ID,
+      message_id: messageId
+    });
+
+    if (!tgRes.data || !tgRes.data.ok) {
+      // Telegram trả ok:false khi tin nhắn đã bị xoá hoặc quá cũ (>48h).
+      // Cleanup là best-effort nên không cần làm client thất bại.
+      console.warn('Delete warning:', tgRes.data && tgRes.data.description);
+      return res.status(200).json({ ok: false, warning: (tgRes.data && tgRes.data.description) || 'Telegram từ chối xoá' });
+    }
+
+    return res.json({ ok: true });
+
+  } catch (error) {
+    console.error('Delete Error:', error.response ? error.response.data : error.message);
+    return res.status(500).json({
+      ok: false,
+      error: error.response?.data?.description || error.message || 'Delete failed'
+    });
+  }
+});
+
+// =========================================================================
+// 7. 404 JSON CHO MỌI ROUTE KHÔNG KHỚP
+//    Đặt SAU tất cả các route. Trả JSON + CORS thay vì HTML mặc định của
+//    Express, để app.js luôn parse được response.status.
+// =========================================================================
+app.use((req, res) => {
+  applyCors(req, res);
+  res.status(404).json({
+    ok: false,
+    error: `Route không tồn tại: ${req.method} ${req.originalUrl}`,
+    code: 'ROUTE_NOT_FOUND'
+  });
+});
+
+// =========================================================================
+// 8. XỬ LÝ LỖI NGUYÊN NÂN TỪ MULTER & CÁC LỖI TỔNG THỂ
 // =========================================================================
 app.use((err, req, res, next) => {
+  applyCors(req, res);
+
   if (err instanceof multer.MulterError) {
     return res.status(400).json({ ok: false, error: `Multer Upload Error: ${err.message}` });
-  } else if (err) {
-    return res.status(500).json({ ok: false, error: err.message });
+  }
+  if (err) {
+    return res.status(500).json({ ok: false, error: err.message || 'Unexpected server error' });
   }
   next();
 });
