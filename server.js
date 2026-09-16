@@ -4,6 +4,17 @@ const axios = require('axios');
 const FormData = require('form-data');
 
 const app = express();
+const cors = require('cors');
+
+app.use(cors({
+  origin: '*',
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Drive-Token']
+}));
+
+// Cho phép xử lý request OPTIONS trên mọi đường dẫn
+app.options('*', cors());
+
 app.use((req, res, next) => {
   res.header('Access-Control-Allow-Origin', '*');
   res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
