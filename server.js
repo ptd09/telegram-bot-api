@@ -8,8 +8,19 @@ const app = express();
 const PORT = process.env.PORT || 10000;
 const BOT_TOKEN = process.env.BOT_TOKEN;
 
-// 1. Cho phép CORS toàn bộ để Frontend fetch/stream không bị lỗi
-app.use(cors({ origin: '*' }));
+// 1. Cấu hình CORS chuẩn mở rộng (Bắt buộc để hết lỗi 501 / CORS)
+const corsOptions = {
+  origin: '*', // Cho phép mọi domain kết nối
+  methods: ['GET', 'POST', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'X-Drive-Token', 'Authorization', 'Range'], // Chấp nhận header custom X-Drive-Token
+  exposedHeaders: ['Content-Range', 'X-Content-Range', 'Content-Length', 'Content-Type'], // Mở header để trình duyệt tua Video/Audio
+  optionsSuccessStatus: 200
+};
+
+// Áp dụng CORS cho toàn bộ App và xử lý Preflight Request (OPTIONS)
+app.use(cors(corsOptions));
+app.options('*', cors(corsOptions));
+
 app.use(express.json());
 
 // Cấu hình Multer lưu file tạm trong bộ nhớ (RAM)
